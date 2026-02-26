@@ -1,0 +1,13 @@
+set_export_limit:
+  name: Set Export Limit
+  description: Manually set the GoodWe inverter export power limit in watts.
+  fields:
+    limit_w:
+      name: Limit (W)
+      description: Export power limit in watts. Use 0 to block all export.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 10000
+          unit_of_measurement: W

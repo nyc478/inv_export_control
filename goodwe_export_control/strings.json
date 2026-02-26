@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "GoodWe Export Control Setup",
+        "description": "Get your ENTSO-E API token at {entsoe_url}",
+        "data": {
+          "goodwe_host": "GoodWe Inverter Local IP",
+          "entsoe_api_token": "ENTSO-E API Token",
+          "bidding_zone": "Bidding Zone (default: Greece)",
+          "price_threshold_eur_mwh": "Block export below price (EUR/MWh)"
+        }
+      }
+    }
+  }
+}
