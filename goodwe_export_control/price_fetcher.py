@@ -1,8 +1,13 @@
-"""Fetch day-ahead prices from ENTSO-E with HENEX fallback, persist via HA Store."""
+"""Fetch day-ahead prices from ENTSO-E with HENEX fallback.
+
+HENEX parsing uses only Python builtins (zipfile + xml.etree) — no openpyxl needed.
+"""
 from __future__ import annotations
 
 import io
 import logging
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -21,7 +26,70 @@ HENEX_URL = (
     "https://www.enexgroup.gr/documents/20126/366820/"
     "{date}_EL-DAM_ResultsSummary_EN_v{version:02d}.xlsx"
 )
-HENEX_SHEET = "MKT_Coupling"
+
+_XLSX_NS = {"ns": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+
+def _parse_henex_xlsx(content: bytes, target_date) -> pd.Series | None:
+    """Parse HENEX Excel using only stdlib — no openpyxl required."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            # Shared strings table
+            with zf.open("xl/sharedStrings.xml") as f:
+                ss_tree = ET.parse(f)
+            shared_strings = [
+                "".join(t.text or "" for t in si.findall(".//ns:t", _XLSX_NS))
+                for si in ss_tree.findall(".//ns:si", _XLSX_NS)
+            ]
+
+            # MKT_Coupling is always sheet3
+            with zf.open("xl/worksheets/sheet3.xml") as f:
+                ws_tree = ET.parse(f)
+
+        prices = None
+        for row in ws_tree.findall(".//ns:row", _XLSX_NS):
+            cells = row.findall("ns:c", _XLSX_NS)
+            if not cells:
+                continue
+            # Read first cell to identify row label
+            first = cells[0]
+            v_el = first.find("ns:v", _XLSX_NS)
+            if first.get("t") == "s" and v_el is not None:
+                label = shared_strings[int(v_el.text)]
+            else:
+                continue  # not a string label row
+
+            if label != "Greece Mainland  (15min MCP)":
+                continue
+
+            # Extract numeric values from remaining cells (skip formula/empty)
+            prices = []
+            for cell in cells[1:]:
+                cv = cell.find("ns:v", _XLSX_NS)
+                # Skip formula cells and non-numeric types
+                if cv is None or cell.get("t") == "s":
+                    continue
+                try:
+                    prices.append(float(cv.text))
+                except (ValueError, TypeError):
+                    continue
+            break
+
+        if not prices or len(prices) < 96:
+            _LOGGER.warning("HENEX: only %d prices parsed for %s", len(prices) if prices else 0, target_date)
+            return None
+
+        prices = prices[:96]  # ensure exactly 96 slots
+
+        delivery_start = pd.Timestamp(target_date, tz="Europe/Athens").tz_convert("UTC")
+        index = pd.date_range(start=delivery_start, periods=96, freq="15min", tz="UTC")
+        series = pd.Series(prices, index=index, dtype=float)
+        _LOGGER.info("HENEX: parsed %d slots for %s (first=%.2f)", len(series), target_date, series.iloc[0])
+        return series
+
+    except Exception as exc:
+        _LOGGER.error("HENEX: parse error for %s: %s", target_date, exc)
+        return None
 
 
 class PriceFetcher:
@@ -58,8 +126,7 @@ class PriceFetcher:
     def _needs_refresh(self, now: datetime) -> bool:
         if self._cache is None:
             return True
-        future = self._cache[self._cache.index > now]
-        return future.empty
+        return self._cache[self._cache.index > now].empty
 
     def get_current_price(self, now: datetime) -> float | None:
         if self._needs_refresh(now):
@@ -70,11 +137,9 @@ class PriceFetcher:
             slot = self._cache.index[self._cache.index <= now]
             if slot.empty:
                 return None
-            price = float(self._cache[slot[-1]])
-            _LOGGER.debug("Current price: %.2f EUR/MWh at %s", price, slot[-1])
-            return price
+            return float(self._cache[slot[-1]])
         except Exception as exc:
-            _LOGGER.error("Error reading price from cache: %s", exc)
+            _LOGGER.error("Error reading price: %s", exc)
             return None
 
     def get_upcoming_prices(self, hours: int = 36) -> list[dict]:
@@ -101,7 +166,7 @@ class PriceFetcher:
         end = pd.Timestamp(now.date() + pd.Timedelta(days=2), tz="UTC")
         try:
             prices = self.client.query_day_ahead_prices(self.bidding_zone, start=start, end=end)
-            _LOGGER.info("ENTSO-E: fetched %d price slots", len(prices))
+            _LOGGER.info("ENTSO-E: fetched %d slots", len(prices))
             return prices
         except NoMatchingDataError:
             _LOGGER.warning("ENTSO-E: no data for %s", now.date())
@@ -111,9 +176,8 @@ class PriceFetcher:
             return None
 
     def _fetch_henex(self, now: datetime) -> pd.Series | None:
-        """Fetch from HENEX for today, yesterday, and tomorrow."""
         all_series = []
-        for delta in [0, -1, 1]:
+        for delta in [0, 1, -1]:  # today first, then tomorrow, then yesterday
             target_date = now.date() + timedelta(days=delta)
             series = self._fetch_henex_for_date(target_date)
             if series is not None:
@@ -125,54 +189,20 @@ class PriceFetcher:
 
         combined = pd.concat(all_series).sort_index()
         combined = combined[~combined.index.duplicated(keep="last")]
-        _LOGGER.info("HENEX: combined %d price slots", len(combined))
+        _LOGGER.info("HENEX: combined %d total price slots", len(combined))
         return combined
 
     def _fetch_henex_for_date(self, target_date) -> pd.Series | None:
-        """Try versions v01..v05 and return first successful parse."""
         date_str = target_date.strftime("%Y%m%d")
-        content = None
-
         for version in range(1, 6):
             url = HENEX_URL.format(date=date_str, version=version)
             try:
                 resp = requests.get(url, timeout=15)
                 if resp.status_code == 200:
-                    content = resp.content
-                    _LOGGER.info("HENEX: got %s (v%02d, %d bytes)", date_str, version, len(content))
-                    break
+                    _LOGGER.info("HENEX: downloaded %s v%02d (%d bytes)", date_str, version, len(resp.content))
+                    return _parse_henex_xlsx(resp.content, target_date)
                 _LOGGER.debug("HENEX: %s v%02d → HTTP %d", date_str, version, resp.status_code)
-            except Exception as exc:
-                _LOGGER.debug("HENEX: %s v%02d → %s", date_str, version, exc)
-                break  # network error, no point retrying other versions
-
-        if content is None:
-            return None
-
-        try:
-            wb = pd.read_excel(io.BytesIO(content), sheet_name=HENEX_SHEET, header=None)
-
-            # Find MCP row dynamically
-            mcp_row = None
-            for i, row in wb.iterrows():
-                if isinstance(row.iloc[0], str) and "15min MCP" in row.iloc[0]:
-                    mcp_row = i
-                    break
-
-            if mcp_row is None:
-                _LOGGER.warning("HENEX: MCP row not found in %s", date_str)
-                return None
-
-            prices_raw = wb.iloc[mcp_row, 1:97].values
-
-            # Delivery day starts at midnight Athens time = 22:00 UTC (winter) / 21:00 UTC (summer)
-            delivery_start = pd.Timestamp(target_date, tz="Europe/Athens").tz_convert("UTC")
-            index = pd.date_range(start=delivery_start, periods=96, freq="15min", tz="UTC")
-
-            series = pd.Series(prices_raw, index=index, dtype=float)
-            _LOGGER.info("HENEX: parsed %d slots for %s (first=%.2f)", len(series), target_date, series.iloc[0])
-            return series
-
-        except Exception as exc:
-            _LOGGER.error("HENEX: parse error for %s: %s", date_str, exc)
-            return None
+            except requests.RequestException as exc:
+                _LOGGER.error("HENEX: network error for %s: %s", date_str, exc)
+                break  # no point retrying on network failure
+        return None
