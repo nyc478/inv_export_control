@@ -2,11 +2,10 @@
   "domain": "goodwe_export_control",
   "name": "GoodWe Export Control (Price-Based)",
   "version": "1.0.0",
-  "documentation": "https://github.com/yourrepo/goodwe-export-control",
+  "documentation": "https://github.com/nyc478/inv_export_control",
   "dependencies": [],
-  "requirements": ["entsoe-py==0.6.9"],
+  "requirements": ["entsoe-py==0.6.9", "requests>=2.28.0"],
   "codeowners": [],
   "config_flow": true,
   "iot_class": "cloud_polling"
 }
-
