@@ -21,7 +21,7 @@ class PriceFetcher:
         self.client = EntsoePandasClient(api_key=api_key)
         self.bidding_zone = bidding_zone
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._cache: pd.Series | None = None  # in-memory after load
+        self._cache: pd.Series | None = None
 
     async def async_load(self) -> None:
         """Load cached prices from .storage/ on startup."""
@@ -48,6 +48,12 @@ class PriceFetcher:
                 "values": list(self._cache.values),
             }
         })
+
+    def _needs_refresh(self, now: datetime) -> bool:
+        if self._cache is None:
+            return True
+        future = self._cache[self._cache.index > now]
+        return future.empty
 
     def get_current_price(self, now: datetime) -> float | None:
         """Return current hour's price in EUR/MWh. Refreshes cache if stale."""
@@ -78,11 +84,6 @@ class PriceFetcher:
             {"time": ts.isoformat(), "price_eur_mwh": round(float(val), 2)}
             for ts, val in future.items()
         ]
-        if self._cache is None:
-            return True
-        # Refresh if we have no future prices (cache is stale)
-        future = self._cache[self._cache.index > now]
-        return future.empty
 
     def _fetch_prices(self, now: datetime) -> pd.Series | None:
         start = pd.Timestamp(now.date() - pd.Timedelta(days=1), tz="UTC")
@@ -93,8 +94,7 @@ class PriceFetcher:
             return prices
         except NoMatchingDataError:
             _LOGGER.warning("No day-ahead price data available for %s", now.date())
-            return self._cache  # keep existing cache
+            return self._cache
         except Exception as exc:
             _LOGGER.error("ENTSO-E fetch failed: %s", exc)
-            return self._cache  # keep existing cache on error
-
+            return self._cache
