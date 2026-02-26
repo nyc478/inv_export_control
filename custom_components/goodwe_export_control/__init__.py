@@ -75,7 +75,7 @@ class ExportControlCoordinator(DataUpdateCoordinator):
         block_export = price is not None and price <= self.price_threshold
 
         if not self._manual_override:
-            limit = 0 if block_export else 100  # percent: 0% or 100%
+            limit = 0 if block_export else 10000  # percent: 0% or 100%
             await self.hass.services.async_call(
                 "number", "set_value",
                 {"entity_id": self.export_entity_id, "value": limit},
