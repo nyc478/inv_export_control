@@ -1,7 +1,7 @@
 # GoodWe Export Control
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-
+ v0.2
 Home Assistant integration that automatically blocks grid feed-in from your GoodWe inverter when Greek day-ahead energy prices are zero or negative.
 
 ## Features
