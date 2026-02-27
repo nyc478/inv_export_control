@@ -126,7 +126,18 @@ class PriceFetcher:
     def _needs_refresh(self, now: datetime) -> bool:
         if self._cache is None:
             return True
-        return self._cache[self._cache.index > now].empty
+        # Always refresh if no future slots
+        if self._cache[self._cache.index > now].empty:
+            return True
+        # Refresh if tomorrow's data is missing and it's past 13:00 CET (HENEX publishes ~13:00)
+        tomorrow = (now + timedelta(days=1)).date()
+        tomorrow_start = pd.Timestamp(tomorrow, tz="Europe/Athens").tz_convert("UTC")
+        has_tomorrow = not self._cache[self._cache.index >= tomorrow_start].empty
+        if not has_tomorrow:
+            now_cet = now.astimezone(__import__('zoneinfo').ZoneInfo("Europe/Athens"))
+            if now_cet.hour >= 13:
+                return True
+        return False
 
     def get_current_price(self, now: datetime) -> float | None:
         if self._needs_refresh(now):
