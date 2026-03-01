@@ -74,19 +74,23 @@ class ExportControlCoordinator(DataUpdateCoordinator):
 
         block_export = price is not None and price <= self.price_threshold
 
-        if not self._manual_override:
-            limit = 0 if block_export else 10000  # percent: 0% or 100%
-            await self.hass.services.async_call(
-                "number", "set_value",
-                {"entity_id": self.export_entity_id, "value": limit},
-                blocking=False,
-            )
+        if self._manual_override:
+            limit = 10000
+            _LOGGER.info("Manual override ON → export ALLOWED (limit=%d)", limit)
+        else:
+            limit = 0 if block_export else 10000
             _LOGGER.info(
-                "Price=%.2f EUR/MWh → export %s (limit=%d%%)",
+                "Price=%.2f EUR/MWh → export %s (limit=%d)",
                 price if price is not None else float("nan"),
                 "BLOCKED" if block_export else "ALLOWED",
                 limit,
             )
+
+        await self.hass.services.async_call(
+            "number", "set_value",
+            {"entity_id": self.export_entity_id, "value": limit},
+            blocking=False,
+        )
 
         return {
             "price_eur_mwh": price,
