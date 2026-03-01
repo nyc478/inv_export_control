@@ -7,6 +7,16 @@ class GoodWePriceCard extends HTMLElement {
   setConfig(config) {
     this._config = config;
     this._entity = config.entity || "sensor.day_ahead_energy_price";
+    this._switchEntity = config.switch_entity || "switch.goodwe_export_manual_override";
+  }
+
+  _toggleOverride() {
+    const sw = this._hass.states[this._switchEntity];
+    if (!sw) return;
+    const isOn = sw.state === "on";
+    this._hass.callService("switch", isOn ? "turn_off" : "turn_on", {
+      entity_id: this._switchEntity,
+    });
   }
 
   _render() {
@@ -16,11 +26,13 @@ class GoodWePriceCard extends HTMLElement {
       return;
     }
 
+    const sw = this._hass.states[this._switchEntity];
+    const overrideOn = sw && sw.state === "on";
+
     const currentPrice = parseFloat(state.state);
     const upcoming = state.attributes.upcoming_prices || [];
     const blockExport = state.attributes.block_export;
 
-    // Split into today and tomorrow
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
     const tomorrowStr = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
@@ -65,6 +77,19 @@ class GoodWePriceCard extends HTMLElement {
         <div class="bar-time">${formatTime(p.time)}</div>
       </div>
     `).join("");
+
+    // Status badge label
+    let statusLabel, statusClass;
+    if (overrideOn) {
+      statusLabel = "Override ON";
+      statusClass = "status-override";
+    } else if (blockExport) {
+      statusLabel = "Export Off";
+      statusClass = "status-blocked";
+    } else {
+      statusLabel = "Exporting";
+      statusClass = "status-allowed";
+    }
 
     this.innerHTML = `
       <ha-card>
@@ -117,6 +142,12 @@ class GoodWePriceCard extends HTMLElement {
             font-size: 12px;
             color: var(--muted);
           }
+          .header-right {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+          }
           .status-badge {
             display: inline-flex;
             align-items: center;
@@ -128,12 +159,34 @@ class GoodWePriceCard extends HTMLElement {
             letter-spacing: 0.05em;
             text-transform: uppercase;
           }
-          .status-blocked { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
-          .status-allowed { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+          .status-blocked  { background: rgba(239,68,68,0.15);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+          .status-allowed  { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+          .status-override { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
           .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-          .section {
-            padding: 14px 20px 8px;
+          .override-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.15s;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--muted);
           }
+          .override-btn:hover { opacity: 0.75; }
+          .override-btn.active {
+            background: rgba(251,191,36,0.15);
+            color: #fbbf24;
+            border-color: rgba(251,191,36,0.4);
+          }
+          .section { padding: 14px 20px 8px; }
           .section-title {
             font-size: 10px;
             letter-spacing: 0.12em;
@@ -159,18 +212,9 @@ class GoodWePriceCard extends HTMLElement {
             width: 28px;
             cursor: default;
           }
-          .bar-wrap.current .bar-outer {
-            box-shadow: 0 0 8px var(--accent);
-          }
-          .bar-wrap.current .bar-time {
-            color: var(--accent);
-            font-weight: 700;
-          }
-          .bar-label {
-            font-size: 7px;
-            color: var(--muted);
-            white-space: nowrap;
-          }
+          .bar-wrap.current .bar-outer { box-shadow: 0 0 8px var(--accent); }
+          .bar-wrap.current .bar-time { color: var(--accent); font-weight: 700; }
+          .bar-label { font-size: 7px; color: var(--muted); white-space: nowrap; }
           .bar-outer {
             width: 18px;
             height: 90px;
@@ -223,9 +267,14 @@ class GoodWePriceCard extends HTMLElement {
               <span class="price-unit">€/MWh</span>
             </div>
           </div>
-          <div class="status-badge ${blockExport ? "status-blocked" : "status-allowed"}">
-            <div class="dot"></div>
-            ${blockExport ? "Export Off" : "Exporting"}
+          <div class="header-right">
+            <div class="status-badge ${statusClass}">
+              <div class="dot"></div>
+              ${statusLabel}
+            </div>
+            <button class="override-btn ${overrideOn ? "active" : ""}" id="override-toggle">
+              ⊘ Manual Override
+            </button>
           </div>
         </div>
 
@@ -265,6 +314,8 @@ class GoodWePriceCard extends HTMLElement {
         ` : ""}
       </ha-card>
     `;
+
+    this.querySelector("#override-toggle").addEventListener("click", () => this._toggleOverride());
   }
 
   getCardSize() { return 4; }
